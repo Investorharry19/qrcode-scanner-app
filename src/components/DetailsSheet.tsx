@@ -121,13 +121,7 @@ type QrSvgHandle = {
   ) => void;
 };
 
-function QrPreview({
-  value,
-  hidden = false,
-}: {
-  value: string;
-  hidden?: boolean;
-}) {
+function QrPreview({ value }: { value: string }) {
   const [failed, setFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -202,7 +196,7 @@ function QrPreview({
 
   return (
     <View>
-      <View style={hidden ? styles.hiddenQrSource : styles.qrTile}>
+      <View style={styles.qrTile}>
         <QRCode
           value={value}
           size={150}
@@ -242,8 +236,7 @@ function QrPreview({
 
 type Props = {
   item: HistoryItem | null;
-  /** true while the scanner's lifted QR card is on screen behind the sheet */
-  lifted?: boolean;
+  instant?: boolean;
   onSave: () => void; // toggles saved
   onDelete?: () => void; // only shown when provided (History)
   onClose: () => void;
@@ -251,7 +244,7 @@ type Props = {
 
 export function ResultSheet({
   item,
-  lifted = false,
+  instant = false,
   onSave,
   onDelete,
   onClose,
@@ -282,12 +275,12 @@ export function ResultSheet({
     <Modal
       visible
       transparent
-      animationType="slide"
+      animationType={instant ? "none" : "slide"}
       onRequestClose={onClose}
       statusBarTranslucent
     >
       <View
-        style={[styles.backdrop, lifted && { backgroundColor: "transparent" }]}
+        style={styles.backdrop}
       >
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View
@@ -295,7 +288,7 @@ export function ResultSheet({
             styles.sheet,
             {
               paddingBottom: insets.bottom + 16,
-              maxHeight: lifted ? "55%" : "85%",
+              maxHeight: "85%",
             },
           ]}
         >
@@ -315,7 +308,7 @@ export function ResultSheet({
           </View>
 
           <ScrollView style={styles.sheetBody} showsVerticalScrollIndicator>
-            <QrPreview key={item.id} value={item.value} hidden={lifted} />
+            <QrPreview key={item.id} value={item.value} />
 
             <Text style={styles.contentLabel}>CONTENT</Text>
             <View style={styles.contentBox}>
@@ -432,13 +425,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     overflow: "hidden",
     marginBottom: 16,
-  },
-  hiddenQrSource: {
-    position: "absolute",
-    width: 1,
-    height: 1,
-    opacity: 0,
-    overflow: "hidden",
   },
   qrSaveButton: {
     alignSelf: "center",

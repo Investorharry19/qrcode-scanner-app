@@ -20,32 +20,20 @@ import {
   Camera,
   useCameraDevice,
   useCameraPermission,
-  usePhotoOutput,
 } from "react-native-vision-camera";
 import { useBarcodeScannerOutput } from "react-native-vision-camera-barcode-scanner";
 import { ResultSheet } from "../components/DetailsSheet";
 import {
-  detectColorLogo,
-  rectFromMlkit,
-  ScanLiftOverlay,
-  tiltFromMlkit,
-  type Rect,
-  type Still,
-} from "../components/ScanLiftOverlay";
-import { addToHistory, toggleSaved, type HistoryItem } from "../lib/history";
+  addToHistory,
+  createHistoryItem,
+  toggleSaved,
+  type HistoryItem,
+} from "../lib/history";
 
 const YELLOW = "#FBB325";
 const PANEL = "rgba(40,40,40,0.92)";
 const CORNER = 56;
 const THICK = 14;
-
-const withTimeout = <T,>(p: Promise<T>, ms: number) =>
-  Promise.race([
-    p,
-    new Promise<never>((_, rej) =>
-      setTimeout(() => rej(new Error("timeout")), ms),
-    ),
-  ]);
 
 /* ---------- UI pieces ---------- */
 
@@ -122,16 +110,10 @@ export default function App() {
   const permissionAttempted = useRef(false);
   const [appState, setAppState] = useState(AppState.currentState);
   const [result, setResult] = useState<HistoryItem | null>(null);
-  const pending = useRef<HistoryItem | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const locked = useRef(false);
+  const pendingScanSave = useRef<{ id: string; saved?: boolean } | null>(null);
 
-  // scan "lift" effect
-  const [still, setStill] = useState<Still | null>(null);
-  const [closing, setClosing] = useState(false);
-  const [viewSize, setViewSize] = useState({ w: width, h: height });
-
-  const photoOutput = usePhotoOutput();
   const handleScannedRef = useRef<(b: any[]) => void>(() => {});
   const barcodeOutput = useBarcodeScannerOutput({
     barcodeFormats: ["qr-code"],
@@ -216,7 +198,7 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-  /** Gallery results (no lift effect) */
+  /** Gallery results */
   const showResult = async (
     value: string,
     format: string,
@@ -232,62 +214,7 @@ export default function App() {
   const closeResult = () => {
     setResult(null);
     setActive(true);
-    if (still)
-      setClosing(true); // overlay fades out, then onClosed unlocks
-    else locked.current = false;
-  };
-
-  /** Grab a still, then find the QR inside it with ML Kit. Null = skip the effect. */
-  const captureStill = async (value: string): Promise<Still | null> => {
-    try {
-      const photo = await withTimeout(
-        photoOutput.capturePhoto({ enableShutterSound: false }, {}),
-        2000,
-      );
-      const image = await photo.toImageAsync(); // orientation applied
-      const path = await image.saveToTemporaryFileAsync("jpg", 90);
-      const uri = `file://${path}`;
-
-      let qr: Rect | null = null;
-      let logo = false;
-      try {
-        const found = await BarcodeScanning.scan(uri);
-        const match = found?.find((b: any) => b.value === value) ?? found?.[0];
-        console.log("still scan:", match); // check the bounds field names here
-        qr = rectFromMlkit(match, image.width, image.height);
-
-        // carry a center logo over, but only for upright codes with short payloads
-        const tilt = tiltFromMlkit(match);
-        logo =
-          !!qr &&
-          tilt != null &&
-          Math.abs(tilt) < 10 &&
-          value.length <= 300 &&
-          (await detectColorLogo(image, qr));
-        console.log("logo detected:", logo, "tilt:", tilt);
-      } catch (e) {
-        console.log("still scan failed", e);
-      }
-      return { uri, width: image.width, height: image.height, qr, value, logo };
-    } catch (e) {
-      console.log("capture failed", e);
-      return null;
-    }
-  };
-
-  const liftResult = async (value: string, format: string) => {
-    setClosing(false);
-    const [item, s] = await Promise.all([
-      addToHistory({ value, format, source: "camera" }),
-      captureStill(value),
-    ]);
-    pending.current = item;
-    if (s) {
-      setStill(s); // overlay -> onReady pauses camera -> onLifted shows the sheet
-    } else {
-      setActive(false);
-      setResult(item);
-    }
+    locked.current = false;
   };
 
   const handleScanned = (barcodes: any[]) => {
@@ -295,9 +222,40 @@ export default function App() {
 
     const code = barcodes?.[0];
     if (!code?.rawValue) return;
+    const value = code.rawValue;
+    const format = String(code.format ?? "QR Code");
+    const item = createHistoryItem({ value, format, source: "camera" });
+
     locked.current = true;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    liftResult(code.rawValue, String(code.format ?? "QR Code"));
+    setActive(false);
+    setResult(item);
+    pendingScanSave.current = { id: item.id };
+
+    void addToHistory(item)
+      .then((savedItem) => {
+        const pending = pendingScanSave.current;
+        const saved =
+          pending?.id === savedItem.id
+            ? (pending.saved ?? savedItem.saved)
+            : savedItem.saved;
+        if (pending?.id === savedItem.id) pendingScanSave.current = null;
+        setResult((current) =>
+          current?.id === savedItem.id
+            ? { ...savedItem, saved }
+            : current,
+        );
+      })
+      .catch((error) => {
+        if (pendingScanSave.current?.id === item.id) {
+          pendingScanSave.current = null;
+        }
+        console.warn("Failed to save scanned QR code to history:", error);
+        Alert.alert(
+          "Couldn't save scan",
+          "The QR code is still available in this result, but wasn't added to history.",
+        );
+      });
   };
   handleScannedRef.current = handleScanned;
 
@@ -345,9 +303,11 @@ export default function App() {
     if (!result) return;
     const updated = await toggleSaved(result.id);
     if (!updated) return;
+    if (pendingScanSave.current?.id === updated.id) {
+      pendingScanSave.current.saved = updated.saved;
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setResult(updated);
-    pending.current = updated;
   };
 
   if (!hasPermission) {
@@ -384,15 +344,7 @@ export default function App() {
   }
 
   return (
-    <View
-      style={styles.root}
-      onLayout={(e) =>
-        setViewSize({
-          w: e.nativeEvent.layout.width,
-          h: e.nativeEvent.layout.height,
-        })
-      }
-    >
+    <View style={styles.root}>
       {cameraUnavailable ? (
         <CameraUnavailable
           message={unavailableMessage}
@@ -405,7 +357,7 @@ export default function App() {
           device={device}
           isActive={cameraIsActive}
           torchMode={cameraIsActive && device.hasTorch && torch ? "on" : "off"}
-          outputs={[photoOutput, barcodeOutput]}
+          outputs={[barcodeOutput]}
         />
       )}
 
@@ -478,38 +430,9 @@ export default function App() {
         </View>
       </View>
 
-      {/* Frozen frame + blur + lifted QR card */}
-      {still && (
-        <ScanLiftOverlay
-          key={still.uri}
-          still={still}
-          viewW={viewSize.w}
-          viewH={viewSize.h}
-          fallbackRect={{
-            x: (viewSize.w - frameSize) / 2,
-            y: frameTop,
-            w: frameSize,
-            h: frameSize,
-          }}
-          closing={closing}
-          onReady={() => setActive(false)}
-          onLifted={() => setResult(pending.current)}
-          onFailed={() => {
-            setStill(null);
-            setActive(false);
-            setResult(pending.current);
-          }}
-          onClosed={() => {
-            setStill(null);
-            setClosing(false);
-            locked.current = false;
-          }}
-        />
-      )}
-
       <ResultSheet
         item={result}
-        lifted={!!still}
+        instant
         onSave={toggleSave}
         onClose={closeResult}
       />

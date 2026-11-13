@@ -18,6 +18,20 @@ const newId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const group = (s: Source) => (s === "generated" ? "created" : "scanned");
 
+type HistoryInput = Pick<HistoryItem, "value" | "format" | "source"> &
+  Partial<Pick<HistoryItem, "id" | "createdAt">>;
+
+export function createHistoryItem(e: HistoryInput): HistoryItem {
+  return {
+    id: e.id ?? newId(),
+    value: e.value,
+    format: e.format,
+    source: e.source,
+    createdAt: e.createdAt ?? Date.now(),
+    saved: false,
+  };
+}
+
 // Serialise storage access so quick back-to-back calls can't overwrite each other.
 let queue: Promise<unknown> = Promise.resolve();
 function run<T>(fn: () => Promise<T>): Promise<T> {
@@ -58,22 +72,14 @@ async function write(list: HistoryItem[]) {
 export const loadHistory = () => run(read);
 
 /** Log a scan or a generated code. Re-scanning the same value moves it to the top. */
-export const addToHistory = (e: {
-  value: string;
-  format: string;
-  source: Source;
-}) =>
+export const addToHistory = (e: HistoryInput) =>
   run(async () => {
     const list = await read();
     const prev = list.find(
       (i) => i.value === e.value && group(i.source) === group(e.source),
     );
     const item: HistoryItem = {
-      id: newId(),
-      value: e.value,
-      format: e.format,
-      source: e.source,
-      createdAt: Date.now(),
+      ...createHistoryItem(e),
       saved: prev?.saved ?? false,
     };
     await write([item, ...list.filter((i) => i !== prev)]);
